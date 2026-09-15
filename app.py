@@ -49,6 +49,18 @@ ensure_dataset(SONGS_FILE)
 df_books = pd.read_csv(BOOKS_FILE)
 df_songs = pd.read_csv(SONGS_FILE)
 
+# Sample down the datasets to reduce memory usage during embedding and retrieval.
+# This keeps the app lightweight enough to run on free-tier hosting (512MB RAM)
+# while still providing a diverse, representative set of books and songs.
+BOOKS_SAMPLE_SIZE = 2000
+SONGS_SAMPLE_SIZE = 3000
+
+if len(df_books) > BOOKS_SAMPLE_SIZE:
+    df_books = df_books.sample(n=BOOKS_SAMPLE_SIZE, random_state=42).reset_index(drop=True)
+
+if len(df_songs) > SONGS_SAMPLE_SIZE:
+    df_songs = df_songs.sample(n=SONGS_SAMPLE_SIZE, random_state=42).reset_index(drop=True)
+
 # Keep only the most useful columns for retrieval
 df_books = df_books[
     ["title", "authors", "language", "description", "genres", "rating_score", "num_ratings"]
@@ -118,7 +130,7 @@ df_songs["short_text"] = (
 # Part 2: Embeddings + ChromaDB retrieval
 # ---------------------------------------------------------------------------
 
-embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
+embedding_model = SentenceTransformer("paraphrase-MiniLM-L3-v2")
 
 book_embeddings = embedding_model.encode(df_books["combined_text"].tolist(), show_progress_bar=True)
 song_embeddings = embedding_model.encode(df_songs["combined_text"].tolist(), show_progress_bar=True)
