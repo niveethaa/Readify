@@ -5,7 +5,7 @@ based on a user's mood, theme, or preference.
 
 Built by: Niveetha
 
-Tech stack: Python, Pandas, sentence-transformers, ChromaDB, Groq API, Gradio
+Tech stack: Python, Pandas, scikit-learn (TF-IDF), Groq API, Gradio
 """
 
 import os
@@ -16,8 +16,8 @@ import warnings
 
 warnings.filterwarnings("ignore")
 
-from sentence_transformers import SentenceTransformer
-import chromadb
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
 from groq import Groq
 import gradio as gr
 
@@ -52,8 +52,8 @@ df_songs = pd.read_csv(SONGS_FILE)
 # Sample down the datasets to reduce memory usage during embedding and retrieval.
 # This keeps the app lightweight enough to run on free-tier hosting (512MB RAM)
 # while still providing a diverse, representative set of books and songs.
-BOOKS_SAMPLE_SIZE = 2000
-SONGS_SAMPLE_SIZE = 3000
+BOOKS_SAMPLE_SIZE = 4000
+SONGS_SAMPLE_SIZE = 6000
 
 if len(df_books) > BOOKS_SAMPLE_SIZE:
     df_books = df_books.sample(n=BOOKS_SAMPLE_SIZE, random_state=42).reset_index(drop=True)
@@ -127,71 +127,49 @@ df_songs["short_text"] = (
 )
 
 # ---------------------------------------------------------------------------
-# Part 2: Embeddings + ChromaDB retrieval
+# Part 2: TF-IDF retrieval (lightweight alternative to neural embeddings —
+# avoids loading PyTorch/sentence-transformers, keeping memory usage low
+# enough to run comfortably on free-tier hosting)
 # ---------------------------------------------------------------------------
 
-embedding_model = SentenceTransformer("paraphrase-MiniLM-L3-v2")
+book_vectorizer = TfidfVectorizer(stop_words="english", max_features=5000)
+book_tfidf_matrix = book_vectorizer.fit_transform(df_books["combined_text"])
 
-book_embeddings = embedding_model.encode(df_books["combined_text"].tolist(), show_progress_bar=True)
-song_embeddings = embedding_model.encode(df_songs["combined_text"].tolist(), show_progress_bar=True)
-
-client = chromadb.Client()
-
-try:
-    client.delete_collection(name="books_collection")
-    client.delete_collection(name="songs_collection")
-except Exception:
-    pass
-
-books_collection = client.create_collection(name="books_collection")
-songs_collection = client.create_collection(name="songs_collection")
-
-books_collection.add(
-    ids=df_books.index.astype(str).tolist(),
-    documents=df_books["combined_text"].tolist(),
-    metadatas=df_books[["rating_score", "num_ratings"]].to_dict(orient="records"),
-    embeddings=book_embeddings.tolist(),
-)
-
-# Songs dataset can exceed ChromaDB's max batch size, so it's added in chunks
-song_ids = df_songs.index.astype(str).tolist()
-song_documents = df_songs["combined_text"].tolist()
-song_metadatas = df_songs[["track_popularity"]].to_dict(orient="records")
-song_emb_list = song_embeddings.tolist()
-
-for start in range(0, len(song_ids), 5000):
-    end = start + 5000
-    songs_collection.add(
-        ids=song_ids[start:end],
-        documents=song_documents[start:end],
-        metadatas=song_metadatas[start:end],
-        embeddings=song_emb_list[start:end],
-    )
+song_vectorizer = TfidfVectorizer(stop_words="english", max_features=5000)
+song_tfidf_matrix = song_vectorizer.fit_transform(df_songs["combined_text"])
 
 
-def retrieve_relevant_records(query, k=5, book_filter=None, song_filter=None):
-    """Retrieve the top-k most semantically similar books and songs for a query."""
-    query_embedding = embedding_model.encode([query])
+def retrieve_relevant_records(query, k=5, min_rating=None, min_popularity=None):
+    """Retrieve the top-k most textually similar books and songs for a query using TF-IDF + cosine similarity."""
+    # ---- Books ----
+    query_vec_books = book_vectorizer.transform([query])
+    book_scores = cosine_similarity(query_vec_books, book_tfidf_matrix).flatten()
 
-    book_results = books_collection.query(
-        query_embeddings=query_embedding.tolist(),
-        n_results=k,
-        where=book_filter if book_filter else None,
-    )
-    song_results = songs_collection.query(
-        query_embeddings=query_embedding.tolist(),
-        n_results=k,
-        where=song_filter if song_filter else None,
-    )
+    book_mask = pd.Series(True, index=df_books.index)
+    if min_rating is not None:
+        book_mask &= df_books["rating_score"] >= min_rating
 
-    book_ids = [int(i) for i in book_results["ids"][0]]
-    song_ids_matched = [int(i) for i in song_results["ids"][0]]
+    filtered_book_scores = pd.Series(book_scores, index=df_books.index)
+    filtered_book_scores = filtered_book_scores[book_mask]
+    top_book_ids = filtered_book_scores.sort_values(ascending=False).head(k).index.tolist()
 
-    book_rows = df_books.loc[book_ids]
-    song_rows = df_songs.loc[song_ids_matched]
+    # ---- Songs ----
+    query_vec_songs = song_vectorizer.transform([query])
+    song_scores = cosine_similarity(query_vec_songs, song_tfidf_matrix).flatten()
 
-    book_context = "\n\n".join(book_results["documents"][0])
-    song_context = "\n\n".join(df_songs.loc[song_ids_matched]["short_text"].tolist())
+    song_mask = pd.Series(True, index=df_songs.index)
+    if min_popularity is not None:
+        song_mask &= df_songs["track_popularity"] >= min_popularity
+
+    filtered_song_scores = pd.Series(song_scores, index=df_songs.index)
+    filtered_song_scores = filtered_song_scores[song_mask]
+    top_song_ids = filtered_song_scores.sort_values(ascending=False).head(k).index.tolist()
+
+    book_rows = df_books.loc[top_book_ids]
+    song_rows = df_songs.loc[top_song_ids]
+
+    book_context = "\n\n".join(book_rows["combined_text"].tolist())
+    song_context = "\n\n".join(song_rows["short_text"].tolist())
 
     return book_context, song_context, book_rows, song_rows
 
@@ -235,13 +213,13 @@ def generate_answer(query, book_context, song_context):
     return completion.choices[0].message.content
 
 
-def rag_query(query, k=5, book_filter=None, song_filter=None):
+def rag_query(query, k=5, min_rating=None, min_popularity=None):
     """Full RAG pipeline: Retrieve -> Augment -> Generate."""
     if len(query.strip()) == 0:
         return "Please enter a query to get recommendations!", pd.DataFrame(), pd.DataFrame()
 
     book_context_raw, song_context_raw, book_rows, song_rows = retrieve_relevant_records(
-        query, k, book_filter, song_filter
+        query, k, min_rating, min_popularity
     )
 
     book_context = book_context_raw if len(book_context_raw.strip()) > 0 else "empty"
@@ -308,11 +286,8 @@ def gradio_rag(query, min_rating, min_popularity, k):
     if len(query.strip()) == 0:
         return "Please enter a query to get recommendations!", None, None
 
-    book_filter = {"rating_score": {"$gte": float(min_rating)}}
-    song_filter = {"track_popularity": {"$gte": int(min_popularity)}}
-
     answer, book_rows, song_rows = rag_query(
-        query=query, k=int(k), book_filter=book_filter, song_filter=song_filter
+        query=query, k=int(k), min_rating=float(min_rating), min_popularity=int(min_popularity)
     )
 
     book_display = book_rows.reset_index(drop=True)[["title", "authors", "rating_score", "genres"]]
