@@ -5,6 +5,7 @@ Readify is a Retrieval-Augmented Generation (RAG) system that recommends books a
 Built by: Niveetha
 
 🔗 Try it live: readify.onrender.com 
+
 (Note: hosted on a free tier that spins down after inactivity - the first load after idle time may take up to a minute.)
 
 # How it works
