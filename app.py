@@ -3,12 +3,13 @@ Readify - Book & Music Recommender
 A Retrieval-Augmented Generation (RAG) system that recommends books and songs
 based on a user's mood, theme, or preference.
 
-Built by: Sarbotam and Niveetha
+Built by: Niveetha
 
 Tech stack: Python, Pandas, sentence-transformers, ChromaDB, Groq API, Gradio
 """
 
 import os
+import urllib.request
 import pandas as pd
 import numpy as np
 import warnings
@@ -21,11 +22,32 @@ from groq import Groq
 import gradio as gr
 
 # ---------------------------------------------------------------------------
+# Part 0: Download datasets from Hugging Face Datasets if not present locally
+# ---------------------------------------------------------------------------
+
+HF_DATASET_BASE = "https://huggingface.co/datasets/niveetha/ReadifyDataset/resolve/main"
+BOOKS_FILE = "goodreads_top100_from1980to2023_final.csv"
+SONGS_FILE = "spotify_songs.csv"
+
+
+def ensure_dataset(filename):
+    """Download a dataset file from Hugging Face if it doesn't already exist locally."""
+    if not os.path.exists(filename):
+        print(f"Downloading {filename} from Hugging Face Datasets...")
+        url = f"{HF_DATASET_BASE}/{filename}"
+        urllib.request.urlretrieve(url, filename)
+        print(f"Downloaded {filename}")
+
+
+ensure_dataset(BOOKS_FILE)
+ensure_dataset(SONGS_FILE)
+
+# ---------------------------------------------------------------------------
 # Part 1: Load and clean datasets
 # ---------------------------------------------------------------------------
 
-df_books = pd.read_csv("goodreads_top100_from1980to2023_final.csv")
-df_songs = pd.read_csv("spotify_songs.csv")
+df_books = pd.read_csv(BOOKS_FILE)
+df_songs = pd.read_csv(SONGS_FILE)
 
 # Keep only the most useful columns for retrieval
 df_books = df_books[
@@ -359,4 +381,6 @@ with gr.Blocks(title="Readify - Book & Music Recommender", css=custom_css) as de
     )
 
 if __name__ == "__main__":
-    demo.launch()
+    # Render provides the PORT environment variable; default to 7860 for local runs
+    port = int(os.environ.get("PORT", 7860))
+    demo.launch(server_name="0.0.0.0", server_port=port)
