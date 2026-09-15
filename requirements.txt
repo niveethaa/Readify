@@ -1,6 +1,5 @@
 gradio
 pandas
 numpy
-sentence-transformers
-chromadb
+scikit-learn
 groq
