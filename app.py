@@ -179,7 +179,7 @@ def retrieve_relevant_records(query, k=5, min_rating=None, min_popularity=None):
 # ---------------------------------------------------------------------------
 
 groq_client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
-GROQ_MODEL = "qwen/qwen3.6-27b"
+GROQ_MODEL = "llama-3.3-70b-versatile"
 
 
 def generate_answer(query, book_context, song_context):
